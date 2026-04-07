@@ -31,6 +31,15 @@ After any code change:
 5. A desktop notification is sent for each newly detected unassigned ticket
 6. The badge and stored state are updated
 
+## Screenshots
+Notification example when new unassigned tickets are detected
+
+![alt text](images/notifications.png)
+
+Extension popup showing current status
+
+![alt text](images/opened_ext.png)
+
 ## Multiple ServiceNow Tabs
 
 When multiple ServiceNow tabs are open, the extension uses **the first tab returned by `chrome.tabs.query()`**, which is typically the oldest open tab. Only that tab is reloaded and scraped each cycle. Other ServiceNow tabs are not affected.
