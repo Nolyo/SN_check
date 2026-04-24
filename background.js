@@ -57,7 +57,6 @@ async function checkTickets() {
     return;
   }
 
-  // Find an open ServiceNow tab
   const tabs = await chrome.tabs.query({ url: '*://*.service-now.com/*' });
   if (tabs.length === 0) {
     chrome.action.setBadgeText({ text: '?' });
@@ -66,32 +65,44 @@ async function checkTickets() {
 
   const tab = tabs[0];
 
-  // Reload the page to get fresh data
   chrome.tabs.reload(tab.id);
   await waitForTabLoad(tab.id);
 
   try {
     const response = await chrome.tabs.sendMessage(tab.id, { type: 'REQUEST_SCRAPE' });
-    if (response && response.tickets) {
-      await processTickets(response.tickets, tab.id);
+    if (response) {
+      await processTickets(response.tickets || [], tab.id, response.error || null);
     }
   } catch (err) {
-    // Content script not loaded yet or tab not accessible
     console.warn('Unable to contact content script:', err.message);
   }
 }
 
-async function processTickets(tickets, tabId) {
+async function processTickets(tickets, tabId, error = null) {
+  // When scraping errored, do not update knownTicketIds (keep them for the
+  // next successful tick), do not notify, and surface the error on the badge.
+  if (error) {
+    chrome.action.setBadgeText({ text: '!' });
+    await chrome.storage.local.set({
+      lastCheck: Date.now(),
+      lastTickets: [],
+      unassignedCount: 0,
+      assignedCount: 0,
+      scrapeError: error,
+    });
+    return;
+  }
+
   const { knownTicketIds = [] } = await chrome.storage.local.get('knownTicketIds');
 
   const unassignedTickets = tickets.filter((t) => !t.isAssigned);
   const newUnassigned = unassignedTickets.filter((t) => !knownTicketIds.includes(t.id));
 
-  // Update the badge
-  const count = unassignedTickets.length;
-  chrome.action.setBadgeText({ text: count > 0 ? String(count) : '' });
+  const unassignedCount = unassignedTickets.length;
+  const assignedCount = tickets.length - unassignedCount;
 
-  // Notification for new unassigned tickets
+  chrome.action.setBadgeText({ text: unassignedCount > 0 ? String(unassignedCount) : '' });
+
   if (newUnassigned.length > 0) {
     const title = newUnassigned.length === 1
       ? `New ticket: ${newUnassigned[0].id}`
@@ -109,13 +120,14 @@ async function processTickets(tickets, tabId) {
     });
   }
 
-  // Save state
   const allIds = tickets.map((t) => t.id);
   await chrome.storage.local.set({
     knownTicketIds: allIds,
     lastCheck: Date.now(),
     lastTickets: tickets,
-    unassignedCount: count,
+    unassignedCount,
+    assignedCount,
+    scrapeError: null,
   });
 }
 
@@ -133,7 +145,7 @@ chrome.notifications.onClicked.addListener(async () => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'TICKETS_UPDATE') {
-    processTickets(message.tickets, _sender.tab?.id);
+    processTickets(message.tickets || [], _sender.tab?.id, message.error || null);
   }
 
   if (message.type === 'FORCE_CHECK') {
@@ -143,7 +155,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'GET_STATUS') {
     chrome.storage.local.get(
-      ['enabled', 'lastCheck', 'lastTickets', 'unassignedCount'],
+      ['enabled', 'lastCheck', 'lastTickets', 'unassignedCount', 'assignedCount', 'scrapeError'],
       (data) => sendResponse(data)
     );
     return true;
