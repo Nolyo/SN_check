@@ -1,36 +1,23 @@
 // =============================================================================
-// DOM selector configuration for ServiceNow
+// Scraping configuration for the ServiceNow incident list
 // =============================================================================
-// Adapted to the actual dashboard HTML (positional columns td.vt)
+// Column positions are NOT hardcoded. The extension reads column names from
+// the list's <thead> at runtime so it survives any reordering / hiding /
+// adding of columns by the user or their colleagues.
 //
-// Observed column structure:
-//   td 1 : checkbox (list_decoration_cell)
-//   td 2 : preview  (list_decoration_cell)
-//   td 3 : Ticket number (a.linked.formlink)
-//   td 4 : Priority
-//   td 5 : Assigned To (a.linked with name, or empty)
-//   td 6 : Short Description
-//   td 7 : Updated date
-//   td 8 : Caller email
-//   td 9 : Assignment Group
-//   td 10 : State
-//   ...
+// For each <th>, ServiceNow exposes the field name via a name="..." attribute
+// (e.g. name="number", name="assigned_to"). Those names drive extraction.
 
-const SELECTORS = {
-  // Each ticket row
-  ticketRow: 'tr.list_row',
+const TABLE = {
+  row:        'tr.list_row',
+  headerCell: 'thead > tr:first-child > th',
+};
 
-  // Ticket number (3rd column, link with formlink class)
-  ticketId: 'td:nth-child(3) a.linked.formlink',
-
-  // "Assigned To" field (5th column)
-  assignedTo: 'td:nth-child(5)',
-
-  // Short description (6th column)
-  ticketTitle: 'td:nth-child(6)',
-
-  // Priority (4th column)
-  ticketPriority: 'td:nth-child(4)',
+const FIELDS = {
+  // Scrape aborts with an error code if any of these is not displayed.
+  required: ['number', 'assigned_to'],
+  // Missing optional fields fall back to empty strings.
+  optional: ['short_description', 'priority'],
 };
 
 // Polling interval in minutes
