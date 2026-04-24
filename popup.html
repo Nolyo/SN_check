@@ -36,12 +36,19 @@
       <div class="metric metric--primary">
         <span class="metric-label">Unassigned</span>
         <span id="unassigned-count" class="metric-value">0</span>
+        <span class="metric-sub">
+          <span id="assigned-count">0</span> assigned
+        </span>
       </div>
       <div class="metric">
         <span class="metric-label">Last check</span>
         <span id="last-check" class="metric-value metric-value--sm">--</span>
       </div>
     </section>
+
+    <div id="scrape-error" class="alert-banner" role="status" hidden>
+      <span id="scrape-error-text"></span>
+    </div>
 
     <section class="tickets" id="tickets-section" hidden>
       <div class="tickets-header">
