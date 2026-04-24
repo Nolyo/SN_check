@@ -3,35 +3,84 @@
 // =============================================================================
 // With "all_frames: true" in the manifest, this script runs in every frame.
 // In #gsft_main, document IS the iframe's document -> direct scrape.
+//
+// Strategy: build a fieldName -> column-index map from the list <thead>
+// on every scrape, then read each row through that map. This makes the
+// scraper immune to column reordering or to dashboard personalisations
+// that add/remove unrelated columns.
+
+function buildFieldIndex() {
+  const headers = document.querySelectorAll(TABLE.headerCell);
+  if (headers.length === 0) return null;
+
+  const map = {};
+  headers.forEach((th, index) => {
+    const name = th.getAttribute('name');
+    if (name) map[name] = index;
+  });
+  return map;
+}
+
+function extractNumber(cell) {
+  const a = cell.querySelector('a.linked.formlink');
+  if (!a) return null;
+  return { id: a.textContent.trim(), url: a.href || '' };
+}
+
+function extractAssignee(cell) {
+  const text = cell.textContent.trim();
+  const isEmpty = text === '' || text.toLowerCase() === '(empty)';
+  return {
+    assignedTo: isEmpty ? '' : text,
+    isAssigned: !isEmpty,
+  };
+}
+
+function extractText(cell) {
+  return cell.textContent.trim();
+}
 
 function scrapeTickets() {
-  const rows = document.querySelectorAll(SELECTORS.ticketRow);
+  const fieldIndex = buildFieldIndex();
+  if (!fieldIndex) return { tickets: [], error: 'NO_HEADER' };
+
+  for (const field of FIELDS.required) {
+    if (!(field in fieldIndex)) {
+      return { tickets: [], error: `MISSING_${field.toUpperCase()}` };
+    }
+  }
+
+  const rows = document.querySelectorAll(TABLE.row);
   const tickets = [];
 
   rows.forEach((row) => {
-    const idEl = row.querySelector(SELECTORS.ticketId);
-    const assignedEl = row.querySelector(SELECTORS.assignedTo);
-    const titleEl = row.querySelector(SELECTORS.ticketTitle);
-    const priorityEl = row.querySelector(SELECTORS.ticketPriority);
+    const cells = row.children;
 
-    if (!idEl) return;
+    const numberCell = cells[fieldIndex.number];
+    const assignedCell = cells[fieldIndex.assigned_to];
+    if (!numberCell || !assignedCell) return;
 
-    // The "Assigned To" field contains an <a> link with the name if assigned,
-    // or the literal text "(empty)" if unassigned
-    const assignedText = assignedEl ? assignedEl.textContent.trim() : '';
-    const isAssigned = assignedText !== '' && assignedText.toLowerCase() !== '(empty)';
+    const number = extractNumber(numberCell);
+    if (!number) return;
+
+    const { assignedTo, isAssigned } = extractAssignee(assignedCell);
+
+    const titleCell = 'short_description' in fieldIndex
+      ? cells[fieldIndex.short_description] : null;
+    const priorityCell = 'priority' in fieldIndex
+      ? cells[fieldIndex.priority] : null;
 
     tickets.push({
-      id: idEl.textContent.trim(),
-      url: idEl.href || '',
-      title: titleEl ? titleEl.textContent.trim() : '',
-      assignedTo: isAssigned ? assignedText : '',
+      id: number.id,
+      url: number.url,
+      title: titleCell ? extractText(titleCell) : '',
+      assignedTo,
       isAssigned,
-      priority: priorityEl ? priorityEl.textContent.trim() : '',
+      priority: priorityCell ? extractText(priorityCell) : '',
     });
   });
 
-  return tickets;
+  return { tickets, error: null };
 }
 
 // Returns true if this frame is the top frame AND it contains #gsft_main.
@@ -41,29 +90,25 @@ function isTopFrameWithIframe() {
 }
 
 function sendTicketsToBackground() {
-  // Do not send from the top frame when #gsft_main exists:
-  // the iframe will send its own data after loading.
   if (isTopFrameWithIframe()) return;
 
-  const tickets = scrapeTickets();
+  const { tickets, error } = scrapeTickets();
   chrome.runtime.sendMessage({
     type: 'TICKETS_UPDATE',
     tickets,
+    error,
     url: window.location.href,
     timestamp: Date.now(),
   });
 }
 
-// Listen for scrape requests from the background
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'REQUEST_SCRAPE') {
-    // Only respond from the iframe (or a page without iframe).
-    // Prevents the top frame from responding with an empty array
-    // while #gsft_main is still loading its tickets.
     if (!isTopFrameWithIframe()) {
-      const tickets = scrapeTickets();
+      const { tickets, error } = scrapeTickets();
       sendResponse({
         tickets,
+        error,
         url: window.location.href,
         timestamp: Date.now(),
       });
@@ -72,5 +117,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-// Initial scrape on page load
 sendTicketsToBackground();
