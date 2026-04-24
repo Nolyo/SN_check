@@ -14,6 +14,15 @@ const emptyState = document.getElementById('empty-state');
 const toggleEnabled = document.getElementById('toggle-enabled');
 const btnCheck = document.getElementById('btn-check');
 const btnLabel = btnCheck.querySelector('.btn-label');
+const assignedCountEl = document.getElementById('assigned-count');
+const scrapeErrorEl = document.getElementById('scrape-error');
+const scrapeErrorTextEl = document.getElementById('scrape-error-text');
+
+const SCRAPE_ERROR_MESSAGES = {
+  MISSING_ASSIGNED_TO: 'The "Assigned to" column is not displayed on this dashboard. Add it to monitor unassigned tickets.',
+  MISSING_NUMBER:      'The "Number" column is not displayed on this dashboard.',
+  NO_HEADER:           'Could not read the dashboard. Is the incident list loaded?',
+};
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -82,10 +91,24 @@ function refreshStatus() {
     toggleEnabled.checked = data.enabled;
     lastCheckEl.textContent = formatTime(data.lastCheck);
 
-    const count = data.unassignedCount || 0;
-    unassignedCountEl.textContent = count;
-    primaryMetric.classList.toggle('metric--alert', count > 0);
-    primaryMetric.classList.toggle('metric--primary', count === 0);
+    const unassigned = data.unassignedCount || 0;
+    const assigned = data.assignedCount || 0;
+    unassignedCountEl.textContent = unassigned;
+    assignedCountEl.textContent = assigned;
+
+    const err = data.scrapeError;
+    if (err) {
+      scrapeErrorEl.hidden = false;
+      scrapeErrorTextEl.textContent =
+        SCRAPE_ERROR_MESSAGES[err] || 'Dashboard scraping failed.';
+      // Count is unreliable when the scrape errored — do not alert-style it.
+      primaryMetric.classList.remove('metric--alert');
+      primaryMetric.classList.add('metric--primary');
+    } else {
+      scrapeErrorEl.hidden = true;
+      primaryMetric.classList.toggle('metric--alert', unassigned > 0);
+      primaryMetric.classList.toggle('metric--primary', unassigned === 0);
+    }
 
     renderTickets(data.lastTickets || []);
   });
