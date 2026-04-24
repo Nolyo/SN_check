@@ -487,3 +487,36 @@ html, body {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Secondary metric line under the primary number */
+.metric-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.metric--primary .metric-sub {
+  color: var(--accent);
+  opacity: 0.75;
+}
+
+.metric--alert .metric-sub {
+  color: var(--danger);
+  opacity: 0.85;
+}
+
+/* Scrape error banner */
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--warning-soft);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.4;
+}
