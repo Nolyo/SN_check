@@ -6,6 +6,12 @@ importScripts('config.js');
 
 const ALARM_NAME = 'check-tickets';
 
+// A frame that is not the list owner (or a frame caught mid-navigation) can
+// report NO_HEADER a beat *after* the real list frame already reported success.
+// Within this window, an incoming error is treated as stale and never allowed to
+// clobber the fresh successful reading.
+const SUCCESS_GRACE_MS = 15000;
+
 // -- Initialization -----------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -50,6 +56,29 @@ function waitForTabLoad(tabId, timeoutMs = 15000) {
   });
 }
 
+// The extension can only monitor the tab that holds the incident *list*. With
+// several ServiceNow tabs open (dashboard + individual tickets), picking the
+// first tab blindly could reload a ticket form the user is editing and scrape
+// NO_HEADER (or an empty related list) from it. isListUrl / isFormUrl live in
+// config.js.
+async function findListTab() {
+  const tabs = await chrome.tabs.query({ url: '*://*.service-now.com/*' });
+  if (tabs.length === 0) return null;
+
+  // 1. Ground truth: the tab that actually scraped the list last time, unless
+  //    it has since been navigated to a form.
+  const { lastSuccessTabId } = await chrome.storage.local.get('lastSuccessTabId');
+  const remembered = tabs.find((t) => t.id === lastSuccessTabId && !isFormUrl(t.url));
+  if (remembered) return remembered;
+
+  // 2. A list-looking tab (`..._list.do`), never a ticket form.
+  const listLike = tabs.find((t) => isListUrl(t.url));
+  if (listLike) return listLike;
+
+  // 3. Last resort: any ServiceNow tab that isn't obviously a form.
+  return tabs.find((t) => !isFormUrl(t.url)) || null;
+}
+
 async function checkTickets() {
   const { enabled } = await chrome.storage.local.get('enabled');
   if (!enabled) {
@@ -57,13 +86,11 @@ async function checkTickets() {
     return;
   }
 
-  const tabs = await chrome.tabs.query({ url: '*://*.service-now.com/*' });
-  if (tabs.length === 0) {
+  const tab = await findListTab();
+  if (!tab) {
     chrome.action.setBadgeText({ text: '?' });
     return;
   }
-
-  const tab = tabs[0];
 
   chrome.tabs.reload(tab.id);
   await waitForTabLoad(tab.id);
@@ -81,13 +108,18 @@ async function checkTickets() {
 async function processTickets(tickets, tabId, error = null) {
   // When scraping errored, do not update knownTicketIds (keep them for the
   // next successful tick), do not notify, and surface the error on the badge.
+  // Preserve the last successful reading so the popup keeps showing the most
+  // recent truth instead of replacing it with a misleading "0".
   if (error) {
+    // Defense in depth against the multi-frame race: ignore an error that lands
+    // right after a successful scrape, so a non-list frame's NO_HEADER can never
+    // overwrite the real reading.
+    const { lastSuccessAt = 0 } = await chrome.storage.local.get('lastSuccessAt');
+    if (Date.now() - lastSuccessAt < SUCCESS_GRACE_MS) return;
+
     chrome.action.setBadgeText({ text: '!' });
     await chrome.storage.local.set({
       lastCheck: Date.now(),
-      lastTickets: [],
-      unassignedCount: 0,
-      assignedCount: 0,
       scrapeError: error,
     });
     return;
@@ -121,14 +153,19 @@ async function processTickets(tickets, tabId, error = null) {
   }
 
   const allIds = tickets.map((t) => t.id);
-  await chrome.storage.local.set({
+  const stored = {
     knownTicketIds: allIds,
     lastCheck: Date.now(),
+    lastSuccessAt: Date.now(),
     lastTickets: tickets,
     unassignedCount,
     assignedCount,
     scrapeError: null,
-  });
+  };
+  // Remember which tab owns the list so the periodic check targets it directly
+  // instead of a ticket form that happens to be the first ServiceNow tab.
+  if (tabId != null) stored.lastSuccessTabId = tabId;
+  await chrome.storage.local.set(stored);
 }
 
 // -- Notification click -> focus ServiceNow tab -------------------------------
@@ -145,7 +182,11 @@ chrome.notifications.onClicked.addListener(async () => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'TICKETS_UPDATE') {
-    processTickets(message.tickets || [], _sender.tab?.id, message.error || null);
+    // Ignore unsolicited scrapes from ticket-form tabs: a form's related list
+    // can scrape "successfully" with 0 rows and clobber the real reading.
+    if (!isFormUrl(_sender.url)) {
+      processTickets(message.tickets || [], _sender.tab?.id, message.error || null);
+    }
   }
 
   if (message.type === 'FORCE_CHECK') {

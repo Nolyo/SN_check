@@ -22,3 +22,13 @@ const FIELDS = {
 
 // Polling interval in minutes
 const POLL_INTERVAL_MINUTES = 5;
+
+// ServiceNow's Next Experience wraps every screen under /now/nav/..., so the URL
+// path alone doesn't tell a list from a ticket. The reliable discriminator is
+// the classic target embedded in the URL:
+//   - list -> `..._list.do`   (e.g. incident_list.do)
+//   - form -> `<table>.do`    (e.g. incident.do)
+// Used to keep ticket-form tabs from being scraped or monitored as if they were
+// the incident list.
+function isListUrl(url) { return /_list\.do/i.test(url || ''); }
+function isFormUrl(url) { return /\.do/i.test(url || '') && !isListUrl(url); }

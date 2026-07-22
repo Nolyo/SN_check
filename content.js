@@ -21,6 +21,36 @@ function buildFieldIndex() {
   return map;
 }
 
+// Background-tab throttling + ServiceNow's async list render mean the <thead>
+// is often absent right after document_idle. Wait for required fields to appear
+// (via MutationObserver) before scraping, instead of racing against them.
+function waitForRequiredHeaders(timeoutMs = 8000) {
+  const ready = () => {
+    const map = buildFieldIndex();
+    if (!map) return false;
+    return FIELDS.required.every((field) => field in map);
+  };
+
+  return new Promise((resolve) => {
+    if (ready()) return resolve(true);
+
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(ok);
+    };
+
+    const observer = new MutationObserver(() => {
+      if (ready()) finish(true);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
 function extractNumber(cell) {
   const a = cell.querySelector('a.linked.formlink');
   if (!a) return null;
@@ -83,14 +113,42 @@ function scrapeTickets() {
   return { tickets, error: null };
 }
 
-// Returns true if this frame is the top frame AND it contains #gsft_main.
-// In that case, we let the iframe respond instead.
-function isTopFrameWithIframe() {
-  return window.frameElement === null && !!document.getElementById('gsft_main');
+// Only one frame should scrape: the one that actually owns the incident list.
+// ServiceNow injects several auxiliary same-origin iframes (user menu, notif
+// panel, widgets) that also receive this content script under all_frames=true
+// but have no <thead>. If we let them speak to the background, their NO_HEADER
+// reply overwrites the main iframe's successful scrape.
+//  - Iframe-mode layout: the list lives inside <iframe id="gsft_main">.
+//  - Single-frame layout (legacy / deep links): the list lives in the top frame.
+//
+// IMPORTANT: this is a point-in-time test and MUST be re-checked after any wait.
+// ServiceNow injects #gsft_main a beat *after* the top document's document_idle,
+// so at content-script start the top shell frame sees no #gsft_main and wrongly
+// believes it owns the list. It then waits, finds no <thead>, and sends
+// NO_HEADER, clobbering the real list frame's success. Re-evaluating this once
+// the header wait resolves fixes the race: by then #gsft_main exists and the top
+// frame correctly yields.
+function isScrapableFrame() {
+  if (window.frameElement === null) {
+    // Single-frame list layout only. A directly-opened ticket form (incident.do)
+    // is also a top frame with no #gsft_main, but its related lists can scrape as
+    // an empty "success" and clobber the dashboard reading -> exclude forms.
+    return !document.getElementById('gsft_main') && !isFormUrl(location.href);
+  }
+  try {
+    return window.frameElement.id === 'gsft_main';
+  } catch (_) {
+    return false;
+  }
 }
 
-function sendTicketsToBackground() {
-  if (isTopFrameWithIframe()) return;
+async function sendTicketsToBackground() {
+  if (!isScrapableFrame()) return;
+
+  await waitForRequiredHeaders();
+  // Re-check: #gsft_main may have been injected while we waited, in which case
+  // this top frame is not the list owner and must stay silent.
+  if (!isScrapableFrame()) return;
 
   const { tickets, error } = scrapeTickets();
   chrome.runtime.sendMessage({
@@ -104,7 +162,13 @@ function sendTicketsToBackground() {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'REQUEST_SCRAPE') {
-    if (!isTopFrameWithIframe()) {
+    if (!isScrapableFrame()) return false;
+
+    waitForRequiredHeaders().then(() => {
+      // Same late re-check as the auto path: yield if #gsft_main appeared while
+      // we were waiting for headers.
+      if (!isScrapableFrame()) return;
+
       const { tickets, error } = scrapeTickets();
       sendResponse({
         tickets,
@@ -112,8 +176,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         url: window.location.href,
         timestamp: Date.now(),
       });
-    }
-    return false;
+    });
+    return true;
   }
 });
 
